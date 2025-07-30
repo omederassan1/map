@@ -93,8 +93,8 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwssFN4J6-TSu_xnqAaeZawn1aRgAQfzgJfDTkSitBQINb4_yGBzcm91gcPmJ0wxe4plA/exec"; // ← رابط تتبع المندوبين
-  const CLIENTS_API_URL = "https://script.google.com/macros/s/AKfycbxLHzKKxHx2UMK5ZpYrKLHvBOhB1hNN_ZsIvBKZ4D6wtheUpkjyJoZpreMsoX6hMlPcbA/exec"; // ← ضع هنا رابط سكربت العملاء
+  const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwssFN4J6-TSu_xnqAaeZawn1aRgAQfzgJfDTkSitBQINb4_yGBzcm91gcPmJ0wxe4plA/exec";
+  const CLIENTS_API_URL = "https://script.google.com/macros/s/AKfycbxLHzKKxHx2UMK5ZpYrKLHvBOhB1hNN_ZsIvBKZ4D6wtheUpkjyJoZpreMsoX6hMlPcbA/exec";
 
   const map = L.map('map').setView([36.1876, 44.0205], 13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -102,6 +102,7 @@
   }).addTo(map);
 
   let allData = {};
+  let clientMarkers = [];
 
   function loadData() {
     fetch(SHEET_API_URL)
@@ -184,12 +185,19 @@
             L.marker([p.lat, p.lon], {
               icon: L.icon({
                 iconUrl: 'https://maps.google.com/mapfiles/ms/icons/black-dot.png',
-                iconSize: [32, 32],
-                iconAnchor: [16, 32]
+                iconSize: [16, 16],
+                iconAnchor: [8, 16]
               })
             }).addTo(map).bindPopup(`📡 انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}`);
           } else {
-            L.marker([p.lat, p.lon]).addTo(map).bindPopup(`الوقت: ${p.timeStr}`);
+            L.marker([p.lat, p.lon], {
+  icon: L.icon({
+    iconUrl: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png',
+    iconSize: [16, 16],      // ← يمكنك تغيير هذا للحجم المناسب
+    iconAnchor: [8, 16]
+  })
+}).addTo(map).bindPopup(`الوقت: ${p.timeStr}`);
+
           }
 
           group = [p];
@@ -215,7 +223,6 @@
       }
     });
 
-    // إعادة تحميل مواقع العملاء بعد تحديث الخريطة
     loadClients();
   }
 
@@ -243,26 +250,47 @@
       .then(res => res.json())
       .then(data => {
         if (data.clients && Array.isArray(data.clients)) {
-          data.clients.forEach(client => {
+          clientMarkers = data.clients.map(client => {
             const marker = L.marker([client.lat, client.lon], {
               icon: L.icon({
                 iconUrl: 'https://maps.google.com/mapfiles/ms/icons/orange-dot.png',
-                iconSize: [32, 32],
-                iconAnchor: [16, 32]
+                iconSize: [16, 16],
+                iconAnchor: [8, 16]
               })
             }).addTo(map);
-            marker.bindTooltip(`📍 ${client.name}`, {
-  permanent: true,
-  direction: 'top',
-  offset: [0, -10],
-  className: 'client-label'
-});
+
+            const tooltip = L.tooltip({
+              permanent: true,
+              direction: 'top',
+              offset: [0, -10],
+              className: 'client-label'
+            })
+            .setContent(`📍 ${client.name}`)
+            .setLatLng([client.lat, client.lon]);
+
+            marker.bindTooltip(tooltip);
+            return { marker, tooltip };
           });
+
+          toggleClientTooltips();
         }
       });
   }
 
-  // تحميل الأجهزة عند فتح الصفحة
+  function toggleClientTooltips() {
+    const currentZoom = map.getZoom();
+    const show = currentZoom >= 14;
+
+    clientMarkers.forEach(obj => {
+      const tooltipElement = obj.tooltip.getElement();
+      if (tooltipElement) {
+        tooltipElement.style.display = show ? 'block' : 'none';
+      }
+    });
+  }
+
+  map.on('zoomend', toggleClientTooltips);
+
   fetch(SHEET_API_URL)
     .then(res => res.json())
     .then(data => {
@@ -276,10 +304,8 @@
       }
     });
 
-  // تحميل العملاء مباشرة عند فتح الصفحة
   loadClients();
 
-  // تحديث تلقائي كل 5 دقائق
   setInterval(() => {
     const device = document.getElementById("deviceSelect").value;
     if (device) {
