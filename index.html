@@ -184,9 +184,9 @@
           if (timeDiff > 15) {
             L.marker([p.lat, p.lon], {
               icon: L.icon({
-                iconUrl: 'https://maps.google.com/mapfiles/ms/icons/black-dot.png',
-                iconSize: [16, 16],
-                iconAnchor: [8, 16]
+                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-grey.png',
+                iconSize: [32, 32],
+                iconAnchor: [16, 32]
               })
             }).addTo(map).bindPopup(`📡 انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}`);
           } else {
