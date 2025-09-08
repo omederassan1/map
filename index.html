@@ -78,9 +78,6 @@
 <div id="map"></div>
 
 <div id="controls">
-  <label>اختر المندوب:</label>
-  <select id="deviceSelect"></select>
-
   <label>اليوم:</label>
   <select id="daySelect">
     <option value="today">اليوم</option>
@@ -93,6 +90,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+  // نفس روابط API التي أرسلتها
   const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwssFN4J6-TSu_xnqAaeZawn1aRgAQfzgJfDTkSitBQINb4_yGBzcm91gcPmJ0wxe4plA/exec";
   const CLIENTS_API_URL = "https://script.google.com/macros/s/AKfycbxLHzKKxHx2UMK5ZpYrKLHvBOhB1hNN_ZsIvBKZ4D6wtheUpkjyJoZpreMsoX6hMlPcbA/exec";
 
@@ -104,6 +102,18 @@
   let allData = {};
   let clientMarkers = [];
 
+  // ألوان ثابتة لكل مندوب عبر جلسة الصفحة
+  const palette = ["#e6194b","#3cb44b","#0082c8","#f58231","#911eb4","#46f0f0","#f032e6","#d2f53c","#fabebe","#008080","#e6beff","#aa6e28","#fffac8","#800000","#aaffc3","#808000","#ffd8b1","#000080","#808080","#000000"];
+  const deviceColors = {};
+  let paletteIdx = 0;
+  function colorFor(device){
+    if(!deviceColors[device]){
+      deviceColors[device] = palette[paletteIdx % palette.length];
+      paletteIdx++;
+    }
+    return deviceColors[device];
+  }
+
   function loadData() {
     fetch(SHEET_API_URL)
       .then(res => res.json())
@@ -111,17 +121,18 @@
         allData = data;
         processAndDisplayData();
         updateLastUpdated();
-      });
+      })
+      .catch(console.error);
   }
 
   function processAndDisplayData() {
+    // امسح كل الماركرز/الخطوط/الدوائر (واترك طبقة الخريطة)
     map.eachLayer(layer => {
       if (layer instanceof L.Marker || layer instanceof L.Polyline || layer instanceof L.Circle) {
         map.removeLayer(layer);
       }
     });
 
-    const device = document.getElementById("deviceSelect").value;
     const dayFilter = document.getElementById("daySelect").value;
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
@@ -129,99 +140,163 @@
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-    let positions = allData[device] || [];
-    positions = positions.map(p => {
-      const date = new Date(p.timestamp);
-      return {
-        ...p,
-        timestamp: date,
-        dateStr: date.toISOString().split('T')[0],
-        timeStr: date.toTimeString().split(' ')[0]
-      };
-    }).filter(p => (dayFilter === 'today' ? p.dateStr === todayStr : p.dateStr === yesterdayStr));
+    let globalBounds = null;
 
-    if (positions.length === 0) return;
+    // مرّ على كل المندوبين
+    for (const device in allData) {
+      let positions = allData[device] || [];
+      positions = positions.map(p => {
+        const date = new Date(p.timestamp);
+        return {
+          ...p,
+          timestamp: date,
+          dateStr: date.toISOString().split('T')[0],
+          timeStr: date.toTimeString().split(' ')[0]
+        };
+      }).filter(p => (dayFilter === 'today' ? p.dateStr === todayStr : p.dateStr === yesterdayStr));
 
-    const path = positions.map(p => [p.lat, p.lon]);
-    const polyline = L.polyline(path, { color: 'blue' }).addTo(map);
-    map.fitBounds(polyline.getBounds());
+      if (positions.length === 0) continue;
 
-    L.marker([positions[0].lat, positions[0].lon], {
-      icon: L.icon({
-        iconUrl: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
-        iconSize: [32, 32],
-        iconAnchor: [16, 32]
-      })
-    }).addTo(map).bindPopup(`بداية الحركة: ${positions[0].timeStr}`);
+      // ارسم مسار المندوب بلون مميز
+      const path = positions.map(p => [p.lat, p.lon]);
+      const color = colorFor(device);
+      const polyline = L.polyline(path, { color }).addTo(map);
 
-    L.marker([positions[positions.length - 1].lat, positions[positions.length - 1].lon], {
-      icon: L.icon({
-        iconUrl: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
-        iconSize: [60, 60],
-        iconAnchor: [24, 60]
-      })
-    }).addTo(map).bindPopup(`🔴 نهاية الحركة: ${positions[positions.length - 1].timeStr}`);
-
-    const mergedStops = [];
-    let group = [];
-
-    for (let i = 0; i < positions.length; i++) {
-      const p = positions[i];
-      if (group.length === 0) {
-        group.push(p);
+      if (!globalBounds) {
+        globalBounds = polyline.getBounds();
       } else {
-        const last = group[group.length - 1];
-        const dist = getDistance(last.lat, last.lon, p.lat, p.lon);
+        globalBounds.extend(polyline.getBounds());
+      }
 
-        if (dist <= 200) {
+      // علامة البداية
+      L.marker([positions[0].lat, positions[0].lon], {
+        icon: L.icon({
+          iconUrl: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
+          iconSize: [32, 32],
+          iconAnchor: [16, 32]
+        })
+      }).addTo(map).bindPopup(`🚀 ${device} - بداية الحركة: ${positions[0].timeStr}`);
+
+      // علامة النهاية + اسم المندوب
+      const last = positions[positions.length - 1];
+      const endMarker = L.marker([last.lat, last.lon], {
+        icon: L.icon({
+          iconUrl: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
+          iconSize: [60, 60],
+          iconAnchor: [24, 60]
+        })
+      }).addTo(map).bindPopup(`🔴 ${device} - نهاية الحركة: ${last.timeStr}`);
+      endMarker.bindTooltip(`${device} • ${last.timeStr}`, {
+        permanent: true,
+        direction: 'top',
+        offset: [0, -12],
+        className: 'client-label'
+      });
+
+      // نفس منطق دمج التوقفات والانقطاعات كما في كودك
+      const mergedStops = [];
+      let group = [];
+
+      for (let i = 0; i < positions.length; i++) {
+        const p = positions[i];
+        if (group.length === 0) {
           group.push(p);
         } else {
-          if (group.length > 1) mergedStops.push(group);
+          const lastInGroup = group[group.length - 1];
+          const dist = getDistance(lastInGroup.lat, lastInGroup.lon, p.lat, p.lon);
 
-          const prev = positions[i - 1];
-          const timeDiff = (p.timestamp - prev.timestamp) / 60000;
-
-          if (timeDiff > 15) {
-            L.marker([p.lat, p.lon], {
-              icon: L.icon({
-                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-grey.png',
-                iconSize: [32, 32],
-                iconAnchor: [16, 32]
-              })
-            }).addTo(map).bindPopup(`📡 انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}`);
+          if (dist <= 200) {
+            group.push(p);
           } else {
-            L.marker([p.lat, p.lon], {
-  icon: L.icon({
-    iconUrl: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png',
-    iconSize: [16, 16],      // ← يمكنك تغيير هذا للحجم المناسب
-    iconAnchor: [8, 16]
-  })
-}).addTo(map).bindPopup(`الوقت: ${p.timeStr}`);
+            if (group.length > 1) mergedStops.push(group);
 
+            const prev = positions[i - 1];
+            const timeDiff = (p.timestamp - prev.timestamp) / 60000;
+
+            if (timeDiff > 15) {
+              L.marker([p.lat, p.lon], {
+                icon: L.icon({
+                  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-grey.png',
+                  iconSize: [32, 32],
+                  iconAnchor: [16, 32]
+                })
+              }).addTo(map).bindPopup(`📡 ${device} - انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}`);
+            } else {
+              L.marker([p.lat, p.lon], {
+                icon: L.icon({
+                  iconUrl: 'https://maps.google.com/mapfiles/ms/icons/blue-dot.png',
+                  iconSize: [16, 16],
+                  iconAnchor: [8, 16]
+                })
+              }).addTo(map).bindPopup(`${device} - الوقت: ${p.timeStr}`);
+            }
+
+            group = [p];
           }
-
-          group = [p];
         }
       }
-    }
+      if (group.length > 1) mergedStops.push(group);
 
-    if (group.length > 1) mergedStops.push(group);
+      // دمج التوقفات المتقاربة في نفس الموقع
+      const finalStops = [];
+      mergedStops.forEach(stopGroup => {
+        const first = stopGroup[0];
+        const last = stopGroup[stopGroup.length - 1];
+        const durationMin = Math.round((last.timestamp - first.timestamp) / 60000);
 
-    mergedStops.forEach(stopGroup => {
-      const first = stopGroup[0];
-      const last = stopGroup[stopGroup.length - 1];
-      const durationMin = Math.round((last.timestamp - first.timestamp) / 60000);
-      if (durationMin > 1) {
-        const radius = Math.min(durationMin * 5, 1000);
-        const isLongStop = durationMin > 60;
-        L.circle([first.lat, first.lon], {
+        if (durationMin > 1) {
+          let merged = false;
+          for (let f of finalStops) {
+            const dist = getDistance(f.lat, f.lon, first.lat, first.lon);
+            if (dist <= 200) {
+              f.details.push({
+                from: first.timeStr,
+                to: last.timeStr,
+                duration: durationMin
+              });
+              f.totalDuration += durationMin;
+              merged = true;
+              break;
+            }
+          }
+
+          if (!merged) {
+            finalStops.push({
+              lat: first.lat,
+              lon: first.lon,
+              details: [{
+                from: first.timeStr,
+                to: last.timeStr,
+                duration: durationMin
+              }],
+              totalDuration: durationMin
+            });
+          }
+        }
+      });
+
+      // عرض التوقفات المدمجة (أحمر للتوقف الطويل وأخضر للقصير)
+      finalStops.forEach(stop => {
+        const isLongStop = stop.totalDuration > 60;
+        const radius = Math.min(stop.totalDuration * 5, 1000);
+
+        let popupContent = `<b>📍 ${device} - توقف عند الموقع</b><br>إجمالي: ${stop.totalDuration} دقيقة<br><hr>`;
+        stop.details.forEach((d, i) => {
+          popupContent += `🕒 توقف ${i+1}: ${d.from} → ${d.to} (${d.duration} دقيقة)<br>`;
+        });
+
+        L.circle([stop.lat, stop.lon], {
           radius,
           color: isLongStop ? 'red' : 'green',
           fillColor: isLongStop ? '#f00' : '#0f0',
           fillOpacity: 0.4
-        }).addTo(map).bindPopup(`توقف من ${first.timeStr} إلى ${last.timeStr} لمدة ${durationMin} دقيقة`);
-      }
-    });
+        }).addTo(map).bindPopup(popupContent);
+      });
+    }
+
+    if (globalBounds) {
+      map.fitBounds(globalBounds, { padding: [30, 30] });
+    }
 
     loadClients();
   }
@@ -274,7 +349,8 @@
 
           toggleClientTooltips();
         }
-      });
+      })
+      .catch(console.error);
   }
 
   function toggleClientTooltips() {
@@ -291,27 +367,10 @@
 
   map.on('zoomend', toggleClientTooltips);
 
-  fetch(SHEET_API_URL)
-    .then(res => res.json())
-    .then(data => {
-      allData = data;
-      const select = document.getElementById("deviceSelect");
-      for (const device in data) {
-        const option = document.createElement("option");
-        option.value = device;
-        option.textContent = device;
-        select.appendChild(option);
-      }
-    });
-
+  // تحميل أولي ثم تحديث كل 5 دقائق
   loadClients();
-
-  setInterval(() => {
-    const device = document.getElementById("deviceSelect").value;
-    if (device) {
-      loadData();
-    }
-  }, 300000);
+  loadData();
+  setInterval(() => { loadData(); }, 300000);
 </script>
 
 </body>
