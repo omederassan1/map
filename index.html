@@ -71,10 +71,41 @@
       padding: 2px 6px;
       border-radius: 6px;
     }
+
+    /* شريط نسبة الشحن العليا */
+    #batteryBar {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1200;
+      background: rgba(255,255,255,0.95);
+      padding: 8px 12px;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+      font-weight: 600;
+      display: none;
+      direction: rtl;
+      font-size: 15px;
+    }
+
+    /* زر النسخ داخل البوب أب (لاستخدام fallback) */
+    .copy-btn {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .copy-btn:hover { background: #0056b3; }
+
   </style>
 </head>
 <body>
 
+<div id="batteryBar"></div>
 <div id="map"></div>
 
 <div id="controls">
@@ -82,10 +113,7 @@
   <select id="deviceSelect"></select>
 
   <label>اليوم:</label>
-  <select id="daySelect">
-    <option value="today">اليوم</option>
-    <option value="yesterday">أمس</option>
-  </select>
+  <select id="daySelect"></select>
 
   <button onclick="loadData()">عرض التحركات</button>
   <div id="lastUpdate"></div>
@@ -93,7 +121,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-  const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwssFN4J6-TSu_xnqAaeZawn1aRgAQfzgJfDTkSitBQINb4_yGBzcm91gcPmJ0wxe4plA/exec";
+  const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbz_ZY0VOSuwEA3w37tQ3J0_JrefxBo4c94Sw1lwkOXhXk3RLCCGOnIRwxrKclQSk6BZDA/exec";
   const CLIENTS_API_URL = "https://script.google.com/macros/s/AKfycbxLHzKKxHx2UMK5ZpYrKLHvBOhB1hNN_ZsIvBKZ4D6wtheUpkjyJoZpreMsoX6hMlPcbA/exec";
 
   const map = L.map('map').setView([36.1876, 44.0205], 13);
@@ -101,20 +129,181 @@
     attribution: '© OpenStreetMap contributors'
   }).addTo(map);
 
-  let allData = {};
-  let clientMarkers = [];
+  let allData = {};       // البيانات كاملة من Google Sheet
+  let clientMarkers = []; // عملاء من CLIENTS_API_URL
 
-  function loadData() {
+  // --- دالة مساعدة لاستخراج قيمة البطارية من سجل (مرنة لعدة أسماء للعمود) ---
+  function getBatteryFromRecord(rec) {
+    if (!rec) return null;
+
+    // لو كان مصفوفة (rows as arrays)
+    if (Array.isArray(rec)) {
+      if (rec.length >= 7 && rec[6] !== undefined && rec[6] !== null && String(rec[6]).trim() !== '') return rec[6];
+      // محاولة إيجاد أول قيمة تبدو كنسبة
+      for (const v of rec) {
+        if (v !== undefined && v !== null && String(v).trim().match(/\d{1,3}/)) return v;
+      }
+      return null;
+    }
+
+    // لو كان كائن
+    const candidates = ['battery','batt','battery_level','bat','batteryLevel','col7','عمود7','c7','col_7','column7'];
+    for (const k of candidates) {
+      if (rec[k] !== undefined && rec[k] !== null && String(rec[k]).trim() !== '') return rec[k];
+    }
+    // البحث عن أي مفتاح يحتوي على كلمة battery أو bat أو عمود7
+    for (const k of Object.keys(rec)) {
+      const lk = k.toLowerCase();
+      if (lk.includes('battery') || lk.includes('bat') || lk.includes('عمود') || lk.includes('col7') || lk === '7') {
+        if (rec[k] !== undefined && rec[k] !== null && String(rec[k]).trim() !== '') return rec[k];
+      }
+    }
+    // محاولة إيجاد أي قيمة في السجل تشبه نسبة
+    for (const k of Object.keys(rec)) {
+      const v = rec[k];
+      if (typeof v === 'string' && v.trim().match(/^\d{1,3}%?$/)) return v;
+      if (typeof v === 'number' && v >= 0 && v <= 100) return v;
+    }
+    return null;
+  }
+
+  // --- شريط النسبة العلوي ---
+  const batteryBar = document.getElementById('batteryBar');
+  function showBatteryBar(text, color = '#333', tooltip = '') {
+    batteryBar.innerHTML = `🔋 نسبة الشحن الحالية: <span style="color:${color}; margin-left:8px;">${text}</span>`;
+    batteryBar.title = tooltip || '';
+    batteryBar.style.display = 'block';
+  }
+  function hideBatteryBar() {
+    batteryBar.style.display = 'none';
+  }
+
+  // --- تعبئة قائمة الأيام (اليوم + 6 أيام سابقة) ---
+  const daySelect = document.getElementById("daySelect");
+  function populateDays() {
+    const daysOfWeek = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+    const today = new Date();
+    daySelect.innerHTML = "";
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      const value = d.toISOString().split('T')[0];
+      let name;
+      if (i === 0) name = "اليوم (" + daysOfWeek[d.getDay()] + ")";
+      else if (i === 1) name = "أمس (" + daysOfWeek[d.getDay()] + ")";
+      else name = daysOfWeek[d.getDay()] + " (" + value + ")";
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = name;
+      daySelect.appendChild(opt);
+    }
+  }
+  populateDays();
+
+  // --- تحميل بيانات الشيت ثم عرض الأجهزة في select ---
+  function initDevices() {
     fetch(SHEET_API_URL)
       .then(res => res.json())
       .then(data => {
-        allData = data;
+        allData = data || {};
+        const select = document.getElementById("deviceSelect");
+        select.innerHTML = '';
+        const devices = Object.keys(allData);
+        devices.forEach((device, idx) => {
+          const option = document.createElement("option");
+          option.value = device;
+          option.textContent = device;
+          select.appendChild(option);
+        });
+
+        // عند تغيير المندوب: عرض نسبة الشحن الحالية فورًا (من أحدث سجل موجود)
+        select.addEventListener('change', () => {
+          updateBatteryDisplay();
+        });
+
+        // إن وُجد جهاز واحد أو أكثر نحدد الأول ونعرض نسبته
+        if (devices.length > 0) {
+          select.value = devices[0];
+          updateBatteryDisplay();
+        }
+      })
+      .catch(err => {
+        console.error('فشل جلب الأجهزة من الشيت:', err);
+      });
+  }
+
+  // --- دالة لتحديث شريط البطارية للمندوب الحالي (آخر سجل زمنياً من allData[device]) ---
+  function updateBatteryDisplay() {
+    const device = document.getElementById("deviceSelect").value;
+    if (!device || !allData[device] || allData[device].length === 0) {
+      hideBatteryBar();
+      return;
+    }
+
+    // إيجاد أحدث سجل حسب timestamp
+    let latestRec = null;
+    let latestDate = null;
+    for (const rec of allData[device]) {
+      const ts = rec.timestamp || rec.time || rec.datetime || rec.date;
+      const d = ts ? new Date(ts) : null;
+      if (d && !isNaN(d)) {
+        if (!latestDate || d > latestDate) {
+          latestDate = d;
+          latestRec = rec;
+        }
+      }
+    }
+    // إن لم نجد تواريخ، نأخذ العنصر الأخير في المصفوفة
+    if (!latestRec) {
+      latestRec = allData[device][allData[device].length - 1];
+      latestDate = latestRec && latestRec.timestamp ? new Date(latestRec.timestamp) : null;
+    }
+
+    const rawBatt = getBatteryFromRecord(latestRec);
+    let display = 'غير معروف 🔋';
+    let color = '#666';
+    let tooltip = '';
+
+    if (rawBatt !== null && rawBatt !== undefined && String(rawBatt).trim() !== '') {
+      const s = String(rawBatt).trim();
+      const m = s.match(/(\d{1,3})/);
+      let num = null;
+      if (m) num = parseInt(m[1], 10);
+      if (num !== null && !isNaN(num)) {
+        display = num + '%';
+        if (num > 50) color = '#28a745';
+        else if (num > 20) color = '#ff8c00';
+        else color = '#dc3545';
+      } else {
+        display = s;
+      }
+    }
+
+    if (latestDate && !isNaN(latestDate)) {
+      tooltip = 'آخر إرسالية: ' + latestDate.toLocaleString('ar-EG');
+    }
+    showBatteryBar(display, color, tooltip);
+  }
+
+  // --- تحميل واظهار تحركات المندوب المحدد لليوم المحدد ---
+  function loadData() {
+    // نعيد جلب الشيت كي تتحدث البيانات (في حال تم تغييرها على الشيت)
+    fetch(SHEET_API_URL)
+      .then(res => res.json())
+      .then(data => {
+        allData = data || {};
         processAndDisplayData();
         updateLastUpdated();
+        updateBatteryDisplay(); // نحدث شريط البطارية بعد التحديث
+      })
+      .catch(err => {
+        console.error('خطأ أثناء تحميل البيانات:', err);
       });
   }
 
   function processAndDisplayData() {
+    // إزالة الطبقات القديمة (markers, polylines, circles)
     map.eachLayer(layer => {
       if (layer instanceof L.Marker || layer instanceof L.Polyline || layer instanceof L.Circle) {
         map.removeLayer(layer);
@@ -123,22 +312,18 @@
 
     const device = document.getElementById("deviceSelect").value;
     const dayFilter = document.getElementById("daySelect").value;
-    const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
-    const yesterday = new Date(now);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
 
     let positions = allData[device] || [];
+    // تحويل الطوابع الزمنية وتشكيل حقول مساعدة
     positions = positions.map(p => {
       const date = new Date(p.timestamp);
       return {
         ...p,
         timestamp: date,
-        dateStr: date.toISOString().split('T')[0],
-        timeStr: date.toTimeString().split(' ')[0]
+        dateStr: isNaN(date) ? (p.date ? String(p.date).split('T')[0] : '') : date.toISOString().split('T')[0],
+        timeStr: isNaN(date) ? (p.time || '') : date.toTimeString().split(' ')[0]
       };
-    }).filter(p => (dayFilter === 'today' ? p.dateStr === todayStr : p.dateStr === yesterdayStr));
+    }).filter(p => p.dateStr === dayFilter);
 
     if (positions.length === 0) return;
 
@@ -146,22 +331,31 @@
     const polyline = L.polyline(path, { color: 'blue' }).addTo(map);
     map.fitBounds(polyline.getBounds());
 
-    L.marker([positions[0].lat, positions[0].lon], {
+    // بداية الحركة (نُضيف البطارية إن كانت موجودة في أول سجل)
+    const first = positions[0];
+    const firstBattRaw = getBatteryFromRecord(first);
+    const firstBattText = firstBattRaw ? String(firstBattRaw) : 'غير معروف 🔋';
+    L.marker([first.lat, first.lon], {
       icon: L.icon({
         iconUrl: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png',
         iconSize: [32, 32],
         iconAnchor: [16, 32]
       })
-    }).addTo(map).bindPopup(`بداية الحركة: ${positions[0].timeStr}`);
+    }).addTo(map).bindPopup(`✅ بداية الحركة: ${first.timeStr}<br>🔋 شحن: <b>${firstBattText}</b>`);
 
-    L.marker([positions[positions.length - 1].lat, positions[positions.length - 1].lon], {
+    // نهاية الحركة (نُعرض البطارية لو كانت موجودة)
+    const lastPos = positions[positions.length - 1];
+    const lastBattRaw = getBatteryFromRecord(lastPos);
+    const lastBattText = lastBattRaw ? String(lastBattRaw) : 'غير معروف 🔋';
+    L.marker([lastPos.lat, lastPos.lon], {
       icon: L.icon({
         iconUrl: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png',
         iconSize: [60, 60],
         iconAnchor: [24, 60]
       })
-    }).addTo(map).bindPopup(`🔴 نهاية الحركة: ${positions[positions.length - 1].timeStr}`);
+    }).addTo(map).bindPopup(`🔴 نهاية الحركة: ${lastPos.timeStr}<br>🔋 نسبة الشحن: <b>${lastBattText}</b>`);
 
+    // تجميع التوقفات واظهار نقاط التفتيش مع البطارية لكل نقطة (لو متوفرة)
     const mergedStops = [];
     let group = [];
 
@@ -181,6 +375,9 @@
           const prev = positions[i - 1];
           const timeDiff = (p.timestamp - prev.timestamp) / 60000;
 
+          const battRaw = getBatteryFromRecord(p);
+          const battText = battRaw ? String(battRaw) : 'غير معروف 🔋';
+
           if (timeDiff > 15) {
             L.marker([p.lat, p.lon], {
               icon: L.icon({
@@ -188,7 +385,7 @@
                 iconSize: [32, 32],
                 iconAnchor: [16, 32]
               })
-            }).addTo(map).bindPopup(`📡 انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}`);
+            }).addTo(map).bindPopup(`📡 انقطاع الإرسال: ${timeDiff.toFixed(0)} دقيقة<br>الوقت: ${p.timeStr}<br>🔋 شحن: <b>${battText}</b>`);
           } else {
             L.marker([p.lat, p.lon], {
               icon: L.icon({
@@ -196,7 +393,7 @@
                 iconSize: [16, 16],
                 iconAnchor: [8, 16]
               })
-            }).addTo(map).bindPopup(`الوقت: ${p.timeStr}`);
+            }).addTo(map).bindPopup(`الوقت: ${p.timeStr}<br>🔋 شحن: <b>${battText}</b>`);
           }
 
           group = [p];
@@ -206,7 +403,6 @@
 
     if (group.length > 1) mergedStops.push(group);
 
-    // دمج التوقفات المتقاربة في نفس الموقع
     const finalStops = [];
     mergedStops.forEach(stopGroup => {
       const first = stopGroup[0];
@@ -244,7 +440,6 @@
       }
     });
 
-    // عرض التوقفات المدمجة
     finalStops.forEach(stop => {
       const isLongStop = stop.totalDuration > 60;
       const radius = Math.min(stop.totalDuration * 5, 1000);
@@ -262,7 +457,7 @@
       }).addTo(map).bindPopup(popupContent);
     });
 
-    loadClients();
+    loadClients(); // إعادة تحميل عملاء (للتأكد من ظهورهم فوق الطبقات)
   }
 
   function getDistance(lat1, lon1, lat2, lon2) {
@@ -284,10 +479,17 @@
     el.textContent = "آخر تحديث: " + now.toLocaleTimeString('ar-EG');
   }
 
+  // --- تحميل عملاء وعرضهم + إظهار البطارية عند الضغط على الدبوس (إن وُجدت) ---
   function loadClients() {
     fetch(CLIENTS_API_URL)
       .then(res => res.json())
       .then(data => {
+        // إزالة علامات العملاء القديمة
+        clientMarkers.forEach(obj => {
+          try { map.removeLayer(obj.marker); } catch(e){}
+        });
+        clientMarkers = [];
+
         if (data.clients && Array.isArray(data.clients)) {
           clientMarkers = data.clients.map(client => {
             const marker = L.marker([client.lat, client.lon], {
@@ -298,13 +500,17 @@
               })
             }).addTo(map);
 
+            const battery = getBatteryFromRecord(client);
+            const battText = battery ? String(battery) : 'غير معروف 🔋';
+            marker.bindPopup(`📍 ${client.name || ''}<br>🔋 نسبة الشحن: <b>${battText}</b>`);
+
             const tooltip = L.tooltip({
               permanent: true,
               direction: 'top',
               offset: [0, -10],
               className: 'client-label'
             })
-            .setContent(`📍 ${client.name}`)
+            .setContent(`📍 ${client.name || ''}`)
             .setLatLng([client.lat, client.lon]);
 
             marker.bindTooltip(tooltip);
@@ -313,7 +519,8 @@
 
           toggleClientTooltips();
         }
-      });
+      })
+      .catch(err => console.error('خطأ جلب العملاء:', err));
   }
 
   function toggleClientTooltips() {
@@ -330,27 +537,94 @@
 
   map.on('zoomend', toggleClientTooltips);
 
-  fetch(SHEET_API_URL)
-    .then(res => res.json())
-    .then(data => {
-      allData = data;
-      const select = document.getElementById("deviceSelect");
-      for (const device in data) {
-        const option = document.createElement("option");
-        option.value = device;
-        option.textContent = device;
-        select.appendChild(option);
-      }
-    });
+  // ------------------------
+  // نسخ الإحداثيات عند الضغط بزر اليمين (مع fallback)
+  // ------------------------
+  map.on('contextmenu', function (e) {
+    const lat = e.latlng.lat.toFixed(6);
+    const lon = e.latlng.lng.toFixed(6);
 
+    const popupContent = `
+      <div style="text-align:center; direction:rtl;">
+        📍 <b>الإحداثيات:</b><br>
+        ${lat}, ${lon}<br><br>
+        <button id="copyCoordsBtn" data-lat="${lat}" data-lon="${lon}" style="
+          background:#007bff;
+          color:white;
+          border:none;
+          border-radius:6px;
+          padding:6px 12px;
+          cursor:pointer;
+        ">📋 نسخ</button>
+      </div>
+    `;
+
+    L.popup()
+      .setLatLng(e.latlng)
+      .setContent(popupContent)
+      .openOn(map);
+  });
+
+  // استماع مركزي لزر النسخ (يعمل حتى لو تم إعادة رسم الـ popup)
+  document.addEventListener('click', async function(ev) {
+    const target = ev.target;
+    const btn = target.closest ? target.closest('#copyCoordsBtn') : (target.id === 'copyCoordsBtn' ? target : null);
+    if (!btn) return;
+
+    const lat = btn.getAttribute('data-lat');
+    const lon = btn.getAttribute('data-lon');
+    const coords = `${lat}, ${lon}`;
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(coords);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = coords;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+
+        const sel = document.getSelection();
+        const prevRange = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        document.execCommand('copy');
+
+        document.body.removeChild(ta);
+        if (prevRange) {
+          sel.removeAllRanges();
+          sel.addRange(prevRange);
+        }
+      }
+
+      const original = btn.innerHTML;
+      btn.innerHTML = '✅ تم النسخ!';
+      setTimeout(() => { try { map.closePopup(); } catch(e){} }, 900);
+      setTimeout(() => { try { btn.innerHTML = original; } catch(e){} }, 1200);
+
+    } catch (err) {
+      alert('فشل النسخ إلى الحافظة. تأكد أن الموقع يعمل عبر HTTPS أو على localhost.\n\nالخطأ: ' + (err && err.message ? err.message : err));
+    }
+  });
+
+  // --- تحميل الأجهزة والعميل لأول مرة وتشغيل التحديث الدوري ---
+  initDevices();
   loadClients();
 
+  // تحديث بيانات المندوب كل 5 دقائق (إن تم اختيار أحدهم)
   setInterval(() => {
     const device = document.getElementById("deviceSelect").value;
     if (device) {
       loadData();
     }
   }, 300000);
+
+  // عند تحميل الصفحة، نريد أيضاً أن نملأ devices إن لم تكن جاهزة (initDevices يقوم بذلك)
+  // وممكن للمستخدم الضغط "عرض التحركات" لعرض خط اليوم المحدد.
+
 </script>
 
 </body>
